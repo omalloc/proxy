@@ -169,3 +169,16 @@ func NewNode(scheme, addr string, metadata map[string]string) Node {
 	}
 	return n
 }
+
+func RawMetadata(keyvals ...string) map[string]string {
+	l := len(keyvals)
+	if l%2 != 0 {
+		return map[string]string{}
+	}
+
+	metadata := make(map[string]string)
+	for i := 0; i < l; i += 2 {
+		metadata[keyvals[i]] = keyvals[i+1]
+	}
+	return metadata
+}

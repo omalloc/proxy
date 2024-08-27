@@ -2,9 +2,11 @@ package random
 
 import (
 	"context"
+	"math/rand"
+	"time"
+
 	"github.com/omalloc/proxy/selector"
 	"github.com/omalloc/proxy/selector/node/direct"
-	"math/rand"
 )
 
 const (
@@ -21,7 +23,9 @@ type Option func(o *options)
 type options struct{}
 
 // Balancer is a random balancer.
-type Balancer struct{}
+type Balancer struct {
+	random *rand.Rand
+}
 
 // New a random selector.
 func New(opts ...Option) selector.Selector {
@@ -33,7 +37,7 @@ func (p *Balancer) Pick(_ context.Context, nodes []selector.WeightedNode) (selec
 	if len(nodes) == 0 {
 		return nil, nil, selector.ErrNoAvailable
 	}
-	cur := rand.Intn(len(nodes))
+	cur := p.random.Intn(len(nodes))
 	selected := nodes[cur]
 	d := selected.Pick()
 	return selected, d, nil
@@ -56,5 +60,7 @@ type Builder struct{}
 
 // Build creates Balancer
 func (b *Builder) Build() selector.Balancer {
-	return &Balancer{}
+	return &Balancer{
+		random: rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
 }

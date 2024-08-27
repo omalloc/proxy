@@ -3,30 +3,43 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"github.com/omalloc/proxy/selector"
-	"github.com/omalloc/proxy/selector/node/direct"
-	"github.com/omalloc/proxy/selector/random"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/omalloc/proxy/selector"
+	"github.com/omalloc/proxy/selector/node/direct"
+	"github.com/omalloc/proxy/selector/random"
 )
+
+var DefaultProxy = New()
+
+type Proxy interface {
+	Do(req *http.Request) (*http.Response, error)
+	Apply(nodes []selector.Node)
+}
 
 type ReverseProxy struct {
 	// Rebalancer is nodes rebalancer.
 	selector.Rebalancer
-	*http.Client
 	*direct.Builder
 
-	selector selector.Selector
+	dialer    *net.Dialer
+	clientMap map[string]*http.Client
+	selector  selector.Selector
 }
 
 type Option func(*ReverseProxy)
 
 func New(opts ...Option) *ReverseProxy {
 	r := &ReverseProxy{
-		Client:   &http.Client{},
-		Builder:  &direct.Builder{},
-		selector: random.NewBuilder().Build(),
+		Builder:   &direct.Builder{},
+		clientMap: make(map[string]*http.Client, 16),
+		dialer: &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		},
+		selector: random.NewBuilder().Build(), // default algorithm is random
 	}
 
 	for _, opt := range opts {
@@ -36,7 +49,7 @@ func New(opts ...Option) *ReverseProxy {
 }
 
 func (r *ReverseProxy) Do(req *http.Request) (*http.Response, error) {
-	selected, done, err := r.selector.Select(req.Context())
+	current, done, err := r.selector.Select(req.Context())
 	if err != nil {
 		return nil, selector.ErrNoAvailable
 	}
@@ -46,20 +59,37 @@ func (r *ReverseProxy) Do(req *http.Request) (*http.Response, error) {
 		BytesReceived: true,
 	})
 
-	// Set the URL to the selected TCP address
-	r.Client.Transport = &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			fmt.Println("RemoteAddr:", selected.Address())
-			return net.Dial("tcp", selected.Address())
-		},
-		MaxIdleConns:          100,
-		IdleConnTimeout:       3 * time.Second,
-		TLSHandshakeTimeout:   3 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+	resp, err := r.find(current.Address()).Do(req)
+	resp.Header.Add("X-Proxy-By", fmt.Sprintf("proxy@%s", current.Address()))
+
+	return resp, err
+}
+
+func (r *ReverseProxy) find(addr string) *http.Client {
+	if client, ok := r.clientMap[addr]; ok {
+		return client
 	}
 
-	return r.Client.Do(req)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			MaxConnsPerHost:       500,
+			MaxIdleConns:          1000,
+			MaxIdleConnsPerHost:   100,
+			IdleConnTimeout:       10 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return r.dialer.DialContext(ctx, network, addr)
+			},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	r.clientMap[addr] = client
+
+	return client
 }
 
 // Apply is apply all nodes when any changes happen
@@ -81,9 +111,9 @@ func WithSelector(s selector.Selector) Option {
 	}
 }
 
-// WithClient is set http.Client
-func WithClient(client *http.Client) Option {
+// WithDialer is set custom net.Dialer
+func WithDialer(d *net.Dialer) Option {
 	return func(r *ReverseProxy) {
-		r.Client = client
+		r.dialer = d
 	}
 }
