@@ -2,9 +2,10 @@ package wrr
 
 import (
 	"context"
+	"sync"
+
 	"github.com/omalloc/proxy/selector"
 	"github.com/omalloc/proxy/selector/node/direct"
-	"sync"
 )
 
 const (
