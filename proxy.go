@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -24,9 +23,10 @@ type ReverseProxy struct {
 	selector.Rebalancer
 	*direct.Builder
 
-	dialer    *net.Dialer
-	clientMap map[string]*http.Client
-	selector  selector.Selector
+	dialer       *net.Dialer
+	clientMap    map[string]*http.Client
+	selector     selector.Selector
+	ActivateMock func(*http.Client)
 }
 
 type Option func(*ReverseProxy)
@@ -59,10 +59,7 @@ func (r *ReverseProxy) Do(req *http.Request) (*http.Response, error) {
 		BytesReceived: true,
 	})
 
-	resp, err := r.find(current.Address()).Do(req)
-	resp.Header.Add("X-Proxy-By", fmt.Sprintf("proxy@%s", current.Address()))
-
-	return resp, err
+	return r.find(current.Address()).Do(req)
 }
 
 func (r *ReverseProxy) find(addr string) *http.Client {
@@ -86,6 +83,9 @@ func (r *ReverseProxy) find(addr string) *http.Client {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+	}
+	if r.ActivateMock != nil {
+		r.ActivateMock(client)
 	}
 	r.clientMap[addr] = client
 
@@ -115,5 +115,12 @@ func WithSelector(s selector.Selector) Option {
 func WithDialer(d *net.Dialer) Option {
 	return func(r *ReverseProxy) {
 		r.dialer = d
+	}
+}
+
+// WithActivateMock is set httpmock.ActivateNonDefault
+func WithActivateMock(fn func(*http.Client)) Option {
+	return func(r *ReverseProxy) {
+		r.ActivateMock = fn
 	}
 }
