@@ -4,14 +4,13 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/omalloc/proxy/selector"
 	"github.com/omalloc/proxy/selector/node/direct"
 	"github.com/omalloc/proxy/selector/random"
 )
-
-var DefaultProxy = New()
 
 type Proxy interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -23,16 +22,18 @@ type ReverseProxy struct {
 	selector.Rebalancer
 	*direct.Builder
 
+	mu           sync.Mutex
 	dialer       *net.Dialer
-	clientMap    map[string]*http.Client
 	selector     selector.Selector
-	ActivateMock func(*http.Client)
+	clientMap    map[string]*http.Client
+	activateMock func(*http.Client)
 }
 
 type Option func(*ReverseProxy)
 
 func New(opts ...Option) *ReverseProxy {
 	r := &ReverseProxy{
+		mu:        sync.Mutex{},
 		Builder:   &direct.Builder{},
 		clientMap: make(map[string]*http.Client, 16),
 		dialer: &net.Dialer{
@@ -67,26 +68,34 @@ func (r *ReverseProxy) find(addr string) *http.Client {
 		return client
 	}
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			MaxConnsPerHost:       500,
-			MaxIdleConns:          1000,
-			MaxIdleConnsPerHost:   100,
-			IdleConnTimeout:       10 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				return r.dialer.DialContext(ctx, network, addr)
-			},
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tr := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxConnsPerHost:       500,
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       10 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return r.dialer.DialContext(ctx, network, addr)
 		},
+	}
+
+	client := &http.Client{
+		Transport: tr,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	if r.ActivateMock != nil {
-		r.ActivateMock(client)
+
+	if r.activateMock != nil {
+		r.activateMock(client)
 	}
+
 	r.clientMap[addr] = client
 
 	return client
@@ -118,9 +127,9 @@ func WithDialer(d *net.Dialer) Option {
 	}
 }
 
-// WithActivateMock is set httpmock.ActivateNonDefault
-func WithActivateMock(fn func(*http.Client)) Option {
+// WithActivateMock is activate httpmock
+func WithActivateMock(fn func(client *http.Client)) Option {
 	return func(r *ReverseProxy) {
-		r.ActivateMock = fn
+		r.activateMock = fn
 	}
 }

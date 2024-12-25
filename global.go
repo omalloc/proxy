@@ -1,6 +1,11 @@
 package proxy
 
-import "sync"
+import (
+	"net/http"
+	"sync"
+
+	"github.com/omalloc/proxy/selector"
+)
 
 var global = &proxyAppliance{}
 
@@ -11,7 +16,7 @@ type proxyAppliance struct {
 }
 
 func init() {
-	global.SetProxy(DefaultProxy)
+	global.SetProxy(New())
 }
 
 func (a *proxyAppliance) SetProxy(in Proxy) {
@@ -27,4 +32,12 @@ func SetProxy(in Proxy) {
 
 func GetProxy() Proxy {
 	return global
+}
+
+func Do(req *http.Request) (*http.Response, error) {
+	return global.Do(req)
+}
+
+func Apply(nodes []selector.Node) {
+	global.Apply(nodes)
 }

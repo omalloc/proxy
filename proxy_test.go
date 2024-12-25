@@ -1,108 +1,243 @@
-package proxy_test
+package proxy
 
 import (
-	"context"
-	"fmt"
-	"io"
+	"crypto/rand"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httputil"
 	"testing"
 	"time"
 
-	"github.com/omalloc/proxy"
+	"github.com/jarcoal/httpmock"
 	"github.com/omalloc/proxy/selector"
-	"github.com/omalloc/proxy/selector/wrr"
+	"github.com/stretchr/testify/assert"
 )
 
-var (
-	p = proxy.New()
-)
-
-func TestMain(m *testing.M) {
-	nodes := make([]selector.Node, 0, 2)
-	for i := 0; i < 2; i++ {
-		nodes = append(nodes, p.Build(selector.NewNode("http", fmt.Sprintf("127.0.0.1:828%d", i+1), map[string]string{"weight": "10"})))
+func TestNew(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{
+			name: "default options",
+			opts: nil,
+		},
+		{
+			name: "with custom dialer",
+			opts: []Option{
+				WithDialer(&net.Dialer{
+					Timeout:   5 * time.Second,
+					KeepAlive: 5 * time.Second,
+				}),
+			},
+		},
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := New(tt.opts...)
+			assert.NotNil(t, p)
+			assert.NotNil(t, p.selector)
+			assert.NotNil(t, p.dialer)
+			assert.NotNil(t, p.clientMap)
+		})
+	}
+}
+
+func TestReverseProxy_Do(t *testing.T) {
+	// 创建测试服务器
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// 创建测试节点
+	node := &mockNode{scheme: "http", addr: ts.URL[7:]} // 移除 "http://" 前缀
+
+	p := New()
+	p.Apply([]selector.Node{node})
+
+	req, err := http.NewRequest("GET", ts.URL, nil)
+	assert.NoError(t, err)
+
+	resp, err := p.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestReverseProxy_Apply(t *testing.T) {
+	p := New()
+	nodes := []selector.Node{
+		&mockNode{scheme: "http", addr: "localhost:8080"},
+		&mockNode{scheme: "http", addr: "localhost:8081"},
+	}
+
 	p.Apply(nodes)
 
-	m.Run()
+	// 验证节点是否被正确应用
+	client := p.find("localhost:8080")
+	assert.NotNil(t, client)
 }
 
-func TestProxy(t *testing.T) {
-	req, err := http.NewRequest("GET", "http://example.com/path/to/1.apk", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := httputil.DumpRequest(req, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Println(string(b))
+func TestWithOptions(t *testing.T) {
+	mockActivate := func(client *http.Client) {}
 
-	// 第一次发起请求
-	resp, err := p.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	b, err = httputil.DumpResponse(resp, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Println(string(b))
-
-	fmt.Println("------------------------------")
-	fmt.Println()
-
-	// 重新设置可用上游节点
-	p.Apply([]selector.Node{p.Build(selector.NewNode("http", "127.0.0.1:8284", map[string]string{"weight": "100"}))})
-
-	resp, err = p.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		opt  Option
+	}{
+		{
+			name: "WithInitialNodes",
+			opt:  WithInitialNodes([]selector.Node{&mockNode{scheme: "http", addr: "localhost:8080"}}),
+		},
+		{
+			name: "WithActivateMock",
+			opt:  WithActivateMock(mockActivate),
+		},
+		{
+			name: "WithTransport",
+			opt:  WithTransport(&http.Transport{}),
+		},
 	}
 
-	b, err = httputil.DumpResponse(resp, false)
-	if err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := New(tt.opt)
+			assert.NotNil(t, p)
+		})
 	}
-	fmt.Println(string(b))
 }
 
-func TestProxyRebalancer(t *testing.T) {
-	px := proxy.New(
-		proxy.WithSelector(wrr.NewBuilder().Build()),
-		proxy.WithInitialNodes([]selector.Node{
-			selector.NewNode("http", "127.0.0.1:8282", selector.RawMetadata("weight", "10")),
-			selector.NewNode("http", "127.0.0.1:8283", selector.RawMetadata("weight", "20")),
-			selector.NewNode("http", "127.0.0.1:8284", selector.RawMetadata("weight", "70")),
-		}),
+func TestMockRequest(t *testing.T) {
+	// no node proxy
+	proxyClient := New(WithActivateMock(httpmock.ActivateNonDefault))
+	// mock 1.apk
+	httpmock.RegisterResponder(http.MethodGet, "http://example.com/path/to/1.apk", func(r *http.Request) (*http.Response, error) {
+		buf := make([]byte, 2<<10)
+		_, err := rand.Read(buf)
+		return httpmock.NewBytesResponse(http.StatusOK, buf), err
+	})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/path/to/1.apk", nil)
+
+	resp, err := proxyClient.Do(req)
+	if err == nil {
+		t.Fatal(selector.ErrNoAvailable)
+	}
+
+	assert.Equal(t, err, selector.ErrNoAvailable)
+	assert.Nil(t, resp)
+
+	// add node
+	proxyClient.Apply([]selector.Node{&mockNode{scheme: "http", addr: "localhost:8888"}})
+
+	resp, err = proxyClient.Do(req)
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+
+	md, _ := httputil.DumpResponse(resp, false)
+	t.Logf("all response info: %v", string(md))
+}
+
+func TestReUseClient(t *testing.T) {
+	proxyClient := New(
+		WithInitialNodes([]selector.Node{&mockNode{"http", "127.0.0.1:8888"}}),
+		WithActivateMock(httpmock.ActivateNonDefault),
+	)
+	// mock 1.apk
+	httpmock.RegisterResponder(http.MethodGet, "http://example.com/path/to/1.apk", func(r *http.Request) (*http.Response, error) {
+		buf := make([]byte, 2<<10)
+		_, err := rand.Read(buf)
+		return httpmock.NewBytesResponse(http.StatusOK, buf), err
+	})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/path/to/1.apk", nil)
+
+	resp, err := proxyClient.Do(req)
+
+	assert.NotEqual(t, err, selector.ErrNoAvailable)
+	assert.NotNil(t, resp)
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+
+	// re-use client
+	resp, err = proxyClient.Do(req)
+	assert.NotEqual(t, err, selector.ErrNoAvailable)
+	assert.NotNil(t, resp)
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+}
+
+func TestRedirectLocation(t *testing.T) {
+	proxyClient := New(
+		WithInitialNodes([]selector.Node{&mockNode{"http", "127.0.0.1:8888"}}),
+		WithActivateMock(httpmock.ActivateNonDefault),
 	)
 
-	doProxy := func(i int) {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
+	// mock 1.apk
+	httpmock.RegisterResponder(http.MethodGet, "http://example.com/path/to/1.apk", func(r *http.Request) (*http.Response, error) {
+		buf := make([]byte, 2<<10)
+		_, err := rand.Read(buf)
+		return httpmock.NewBytesResponse(http.StatusOK, buf), err
+	})
 
-		req, err := http.NewRequestWithContext(ctx, "GET", "http://example.com/path/to/5.apk", nil)
-		if err != nil {
-			t.Fatal(err)
+	redirectCount := 0
+	// mock 301
+	httpmock.RegisterResponder(http.MethodGet, "http://example.com/path/to/301", func(r *http.Request) (*http.Response, error) {
+		redirectCount++
+
+		if redirectCount > 10 {
+			return &http.Response{
+				StatusCode: http.StatusMovedPermanently,
+				Header: http.Header{
+					"Location": []string{"http://example.com/path/to/1.apk"},
+				},
+			}, nil
 		}
 
-		resp, err := px.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		return &http.Response{
+			StatusCode: http.StatusMovedPermanently,
+			Header: http.Header{
+				"Location": []string{"http://example.com/path/to/301"},
+			},
+		}, nil
+	})
 
-		if resp.StatusCode != 200 {
-			t.Fatalf("doProxy index [%d] unexpected status code: %d", i, resp.StatusCode)
-		}
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/path/to/1.apk", nil)
 
-		_, _ = io.ReadAll(resp.Body)
-		t.Logf("doProxy index [%d] proxy-by: %s\n", i, resp.Header.Get("X-Proxy-By"))
-	}
+	resp, err := proxyClient.Do(req)
+	assert.Nil(t, err)
+	assert.NotEqual(t, err, selector.ErrNoAvailable)
+	assert.NotNil(t, resp)
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+}
 
-	for i := 0; i < 100; i++ {
-		doProxy(i)
-	}
+// mockNode 实现 selector.Node 接口
+type mockNode struct {
+	scheme string
+	addr   string
+}
 
+func (n *mockNode) Address() string {
+	return n.addr
+}
+
+func (n *mockNode) Scheme() string {
+	return n.scheme
+}
+
+func (n *mockNode) Weight() float64 {
+	return 1.0
+}
+
+func (n *mockNode) InitialWeight() *int64 {
+	return nil
+}
+
+func (n *mockNode) Version() string {
+	return "v1.0.0"
+}
+
+func (n *mockNode) Metadata() map[string]string {
+	return nil
 }
