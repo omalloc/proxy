@@ -1,6 +1,8 @@
 package selector
 
-import "context"
+import (
+	"context"
+)
 
 // staticSelector is composite selector.
 type staticSelector struct {
@@ -9,8 +11,14 @@ type staticSelector struct {
 	node        WeightedNode
 }
 
-func (d *staticSelector) Select(_ context.Context, opts ...SelectOption) (selected Node, done DoneFunc, err error) {
-	return d.node, func(_ context.Context, _ DoneInfo) {}, nil
+func donef(ctx context.Context, di DoneInfo) {}
+
+func (d *staticSelector) Select(ctx context.Context, opts ...SelectOption) (selected Node, done DoneFunc, err error) {
+	if p, ok := FromPeerContext(ctx); ok {
+		return p.Node, donef, nil
+	}
+
+	return d.node, donef, nil
 }
 
 func (d *staticSelector) Apply(nodes []Node) {

@@ -41,6 +41,12 @@ type defaultSelector struct {
 }
 
 func (d *defaultSelector) Select(ctx context.Context, opts ...SelectOption) (selected Node, done DoneFunc, err error) {
+	// 快速继承上下文中的 peer 直接执行返回
+	if p, ok := FromPeerContext(ctx); ok {
+		return p.Node, donef, nil
+	}
+
+	// 正常执行选节点
 	var (
 		options    SelectOptions
 		candidates []WeightedNode
