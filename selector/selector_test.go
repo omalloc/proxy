@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/omalloc/proxy/selector"
-	"github.com/omalloc/proxy/selector/aio"
 	"github.com/omalloc/proxy/selector/node/direct"
+	"github.com/omalloc/proxy/selector/once"
 	"github.com/omalloc/proxy/selector/p2c"
 	"github.com/omalloc/proxy/selector/random"
 )
@@ -37,7 +37,7 @@ func TestSelectNodeWithRandom(t *testing.T) {
 
 func TestSelectNodeWithStaticNode(t *testing.T) {
 	b := direct.Builder{}
-	def := aio.NewBuilder().Build()
+	def := once.NewBuilder().Build()
 
 	// 配置1个节点
 	nodes := make([]selector.Node, 0, 1)

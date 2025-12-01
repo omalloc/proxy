@@ -11,6 +11,12 @@ type Peer struct {
 	Node Node
 }
 
+func NewPeer(node Node) *Peer {
+	return &Peer{
+		Node: node,
+	}
+}
+
 // NewPeerContext creates a new context with peer information attached.
 func NewPeerContext(ctx context.Context, p *Peer) context.Context {
 	return context.WithValue(ctx, peerKey{}, p)

@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/jarcoal/httpmock"
-	"github.com/omalloc/proxy/selector"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/omalloc/proxy/selector"
 )
 
 func TestNew(t *testing.T) {
@@ -94,10 +95,6 @@ func TestWithOptions(t *testing.T) {
 		{
 			name: "WithActivateMock",
 			opt:  WithActivateMock(mockActivate),
-		},
-		{
-			name: "WithTransport",
-			opt:  WithTransport(&http.Transport{}),
 		},
 	}
 

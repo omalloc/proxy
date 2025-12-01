@@ -1,4 +1,4 @@
-package aio
+package once
 
 import (
 	"context"
@@ -8,24 +8,23 @@ import (
 )
 
 const (
-	// Name is aio(All in One, only one node) balancer name
-	Name = "aio"
+	// Name is once(only one node) balancer name
+	Name = "once"
 )
 
 var _ selector.Balancer = (*Balancer)(nil) // Name is balancer name
 
-// Option is aio builder option.
+// Option is once builder option.
 type Option func(o *options)
 
-// options is aio builder options
+// options is once builder options
 type options struct{}
 
-// Balancer is a aio balancer.
+// Balancer is a once balancer.
 type Balancer struct {
-	node selector.WeightedNode
 }
 
-// New aio a selector.
+// New once a selector.
 func New(opts ...Option) selector.Selector {
 	return NewBuilder(opts...).Build()
 }
